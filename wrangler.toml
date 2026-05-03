@@ -1,0 +1,21 @@
+name = "game-outreach-mcp"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "game-outreach-mcp-db"
+database_id = "REPLACE_WITH_YOUR_D1_ID"
+
+[vars]
+# No secrets here — all third-party keys come from request headers per-request
+
+# Optional: preview environment
+[[env.preview.d1_databases]]
+binding = "DB"
+database_name = "game-outreach-mcp-db-preview"
+database_id = "REPLACE_WITH_YOUR_PREVIEW_D1_ID"
+
+[observability]
+enabled = true
