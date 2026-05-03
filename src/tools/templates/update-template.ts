@@ -4,7 +4,7 @@ import type { ToolContext } from "../../types/tool-context";
 import { getTemplate } from "../../db";
 import { toolError, toolSuccess } from "../../lib/errors";
 
-export const UpdateTemplateSchema = {
+const InputSchema = {
   name: z.string().describe("Semantic name of the template to update"),
   subject: z
     .string()
@@ -14,11 +14,29 @@ export const UpdateTemplateSchema = {
   body: z.string().min(1).optional().describe("New body — omit to keep existing"),
 };
 
+const OutputSchema = {
+  name: z.string(),
+  subject: z.string(),
+  body: z.string(),
+  updated_at: z.string(),
+};
+
 export function registerUpdateTemplate(server: McpServer, getCtx: () => ToolContext): void {
-  server.tool(
+  server.registerTool(
     "update_template",
-    "Updates an existing template's subject or body. Provide only the fields you want to change. Template name cannot be changed — delete and recreate if a rename is needed.",
-    UpdateTemplateSchema,
+    {
+      title: "Update Template",
+      description:
+        "Updates an existing template's subject or body. Provide only the fields you want to change. Template name cannot be changed — delete and recreate if a rename is needed.",
+      inputSchema: InputSchema,
+      outputSchema: OutputSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true, // overwrites prior subject/body
+        idempotentHint: true, // same input → same end state
+        openWorldHint: false,
+      },
+    },
     async ({ name, subject, body }) => {
       const ctx = getCtx();
       const existing = await getTemplate(ctx.db, ctx.userId, name);

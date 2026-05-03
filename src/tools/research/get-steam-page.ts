@@ -4,7 +4,7 @@ import type { ToolContext } from "../../types/tool-context";
 import { fetchSteamPage } from "../../lib/steam";
 import { toolError, toolSuccess } from "../../lib/errors";
 
-export const GetSteamPageSchema = {
+const InputSchema = {
   url: z
     .string()
     .url()
@@ -13,14 +13,33 @@ export const GetSteamPageSchema = {
     ),
 };
 
-export function registerGetSteamPage(server: McpServer, getCtx: () => ToolContext): void {
-  server.tool(
+const OutputSchema = {
+  appId: z.string(),
+  name: z.string(),
+  description: z.string(),
+  tags: z.array(z.string()),
+  genres: z.array(z.string()),
+  developer: z.string(),
+  releaseDate: z.string(),
+  reviewScore: z.string().nullable(),
+};
+
+export function registerGetSteamPage(server: McpServer, _getCtx: () => ToolContext): void {
+  server.registerTool(
     "get_steam_page",
-    "Fetches and parses a Steam store page returning structured game data including tags, genres, description and developer. Use this as the first step in any outreach workflow to extract the game context needed for channel matching.",
-    GetSteamPageSchema,
+    {
+      title: "Get Steam Page",
+      description:
+        "Fetches and parses a Steam store page returning structured game data including tags, genres, description and developer. Use this as the first step in any outreach workflow to extract the game context needed for channel matching.",
+      inputSchema: InputSchema,
+      outputSchema: OutputSchema,
+      annotations: {
+        readOnlyHint: true,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
     async ({ url }) => {
-      // getCtx is called for parity with other tools — Steam API needs no per-user key
-      void getCtx;
       try {
         const data = await fetchSteamPage(url);
         return toolSuccess(data);

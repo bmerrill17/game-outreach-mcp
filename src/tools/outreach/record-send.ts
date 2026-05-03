@@ -3,7 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolContext } from "../../types/tool-context";
 import { toolError, toolSuccess } from "../../lib/errors";
 
-export const RecordSendSchema = {
+const InputSchema = {
   contact_email: z.string().email().describe("Email address that was sent to"),
   game_id: z.string().describe("Steam app ID of the game being pitched"),
   template_name: z.string().describe("Semantic name of the template that was sent"),
@@ -21,11 +21,31 @@ export const RecordSendSchema = {
     ),
 };
 
+const OutputSchema = {
+  recorded: z.literal(true),
+  id: z.string(),
+  contact_email: z.string(),
+  game_id: z.string(),
+  template_name: z.string(),
+  sent_at: z.string(),
+};
+
 export function registerRecordSend(server: McpServer, getCtx: () => ToolContext): void {
-  server.tool(
+  server.registerTool(
     "record_send",
-    "Records a completed outreach email send to the tracking history. Call this immediately after a successful send via your email MCP. This is what prevents duplicate sends in future runs. Records are immutable — there is no delete or update for send history.",
-    RecordSendSchema,
+    {
+      title: "Record Send",
+      description:
+        "Records a completed outreach email send to the tracking history. Call this immediately after a successful send via your email MCP. This is what prevents duplicate sends in future runs. Records are immutable — there is no delete or update for send history.",
+      inputSchema: InputSchema,
+      outputSchema: OutputSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false, // append-only
+        idempotentHint: false, // each call appends a new row
+        openWorldHint: false,
+      },
+    },
     async ({
       contact_email,
       game_id,
@@ -61,7 +81,7 @@ export function registerRecordSend(server: McpServer, getCtx: () => ToolContext)
           .run();
 
         return toolSuccess({
-          recorded: true,
+          recorded: true as const,
           id,
           contact_email,
           game_id,

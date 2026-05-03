@@ -1,6 +1,6 @@
 # Game Outreach MCP
 
-A remote [Model Context Protocol](https://modelcontextprotocol.io/) server for indie game media outreach. Built on **Cloudflare Workers + Hono + D1**.
+A remote [Model Context Protocol](https://modelcontextprotocol.io/) server for indie game media outreach. Built on **Cloudflare Workers + Hono + D1**. Targets MCP protocol version `2025-06-18`.
 
 This server is intentionally narrow. It does not send emails, generate copy, or make decisions. It owns the three things an agent genuinely cannot do itself:
 
@@ -9,6 +9,12 @@ This server is intentionally narrow. It does not send emails, generate copy, or 
 - **Send-history state** — per-game, per-template deduplication so the same pitch never goes out twice
 
 All reasoning, hook writing, and orchestration belongs to the agent calling the server.
+
+### What kind of MCP this is
+
+Most MCP servers are *thin wrappers* over an existing service — Slack, Linear, Postgres, GitHub. They translate one external API into MCP shape and call it a day.
+
+This server is a **domain-specific orchestration layer with its own state**. It composes three external APIs (Steam, YouTube, Tavily), holds two of its own tables (templates, send-history), exposes those tables as both *tools* and *resources*, and ships a *prompt* that teaches the agent how to use them together. That makes it useful as a reference for what a non-trivial MCP server looks like — not "wrap this API," but "design a tool surface and a small persistent layer for a specific workflow, and let the agent reason on top."
 
 ---
 
@@ -206,23 +212,39 @@ Self-hosting doesn't *eliminate* the key-derived userId model — that's a code-
 
 ---
 
-## Tools (11 total)
+## Surface area
+
+### Tools (11)
+
+Every tool ships with `inputSchema`, `outputSchema`, behavioral `annotations` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`), and returns both `content` (text) and `structuredContent` (typed object) so modern clients get parseable data while older ones still see formatted text.
 
 | Category   | Tool                          | Purpose                                                                |
 | ---------- | ----------------------------- | ---------------------------------------------------------------------- |
 | Research   | `get_steam_page`              | Parse a Steam URL into tags, genres, description, app id              |
-| Research   | `find_channels`               | Search YouTube + Tavily for relevant content creator channels         |
+| Research   | `find_channels`               | Search YouTube + Tavily for relevant content creator channels (emits progress notifications) |
 | Research   | `get_channel_info`            | Pull recent videos, contact email, subscriber count for a channel     |
 | Templates  | `create_template`             | Persist a reusable template with `{{placeholders}}`                   |
 | Templates  | `get_template`                | Fetch one template by semantic name                                    |
-| Templates  | `list_templates`              | List all templates for the current user                                |
+| Templates  | `list_templates`              | List templates for the current user (paginated)                       |
 | Templates  | `update_template`             | Patch the subject and/or body of an existing template                  |
 | Templates  | `delete_template`             | Remove a template (history rows are preserved)                         |
 | Outreach   | `check_contact_eligibility`   | Filter contacts to those not yet sent a given template for a game     |
 | Outreach   | `record_send`                 | Append an immutable send-history row                                   |
-| Reporting  | `get_outreach_summary`        | Aggregate sends by game and template                                   |
+| Reporting  | `get_outreach_summary`        | Aggregate sends by game and template (paginated)                      |
 
-Plus one MCP **prompt**: `outreach-workflow` — the canonical workflow guide, discoverable via `prompts/list`.
+### Resources (1)
+
+| URI template          | Purpose                                                                                  |
+| --------------------- | ---------------------------------------------------------------------------------------- |
+| `template://{name}`   | Each saved template surfaced as a readable resource. Supports `list` and name autocomplete. |
+
+Templates appear as resources *in addition to* the CRUD tools. Tools are for *actions*; resources are for *readable state the agent may want to enumerate as context*. Modeling templates both ways lets resource-aware clients (e.g. an "@-mention" picker) treat them as first-class context without losing the imperative tool API.
+
+### Prompts (1)
+
+| Name                  | Arguments                                  | Purpose                                       |
+| --------------------- | ------------------------------------------ | --------------------------------------------- |
+| `outreach-workflow`   | `game_url?`, `template_name?`, `dry_run?`  | Canonical step-by-step workflow guide. Args optionally pre-pin the run. |
 
 ---
 
@@ -231,6 +253,56 @@ Plus one MCP **prompt**: `outreach-workflow` — the canonical workflow guide, d
 This server is self-documenting via MCP Prompts. Once connected, call `prompts/list` to see available prompts, then `prompts/get` with name `outreach-workflow` to load the full workflow into your agent's context.
 
 A pre-built skill file is also at [`examples/outreach-workflow.skill.md`](examples/outreach-workflow.skill.md) for agents that benefit from auto-loaded context (e.g. Claude Code). It mirrors the server prompt — the server prompt is the authoritative version.
+
+---
+
+## Example session
+
+A condensed transcript of what an actual outreach run looks like through this server:
+
+```
+user> Help me reach out to YouTubers for my game at
+      https://store.steampowered.com/app/1234567/My_Tactical_Roguelike/
+
+agent> [calls prompts/get name=outreach-workflow game_url=...]
+       [calls get_steam_page url=...]
+        → { appId: "1234567", name: "My Tactical Roguelike",
+            tags: ["Tactical","Roguelike","Turn-Based","Indie"], ... }
+
+       [calls list_templates]
+        → { count: 1, templates: [{ name: "initial-outreach", ... }] }
+
+       [calls find_channels game_name="My Tactical Roguelike"
+                            tags=["Tactical","Roguelike","Turn-Based"]
+                            sources=["youtube","tavily"]]
+        → progress: "Searching YouTube channels…" (1/2)
+        → progress: "YouTube returned 10 channels"
+        → progress: "Searching Tavily…" (2/2)
+        → { count: 18, channels: [...] }
+
+       [calls get_channel_info channel_url=...] × 4 (shortlist)
+        → for each: { name, subscribers, contactEmail, recentVideos: [...] }
+
+       [calls check_contact_eligibility template_name="initial-outreach"
+                                        game_id="1234567"
+                                        contacts=[...]]
+        → { eligible_count: 3, skipped_count: 1, eligible: [...], skipped: [...] }
+
+       [for each eligible contact:
+          1. drafts a 2-3 sentence hook referencing actual recent video titles
+          2. calls get_template name="initial-outreach"
+          3. substitutes {{channel_name}}, {{game_name}}, {{hook}} locally
+          4. sends via the user's Gmail/Resend MCP
+          5. calls record_send contact_email=... game_id=... template_name=...]
+
+       [calls get_outreach_summary game_id="1234567"]
+        → { total_records: 1, summary: [{ template_name: "initial-outreach",
+            total_sends: 3, unique_contacts: 3, last_sent_at: "..." }] }
+
+       Done. Sent 3 personalised emails, skipped 1 (already contacted last week).
+```
+
+The agent does all reasoning and copy generation. The server only fetches data, holds state, and enforces dedupe.
 
 ---
 
@@ -250,9 +322,64 @@ D1 (SQLite at the edge)   ── templates, sent_emails
 External APIs             ── Steam Store, YouTube Data API, Tavily
 ```
 
-The Worker uses the SDK's `WebStandardStreamableHTTPServerTransport`, which speaks the MCP Streamable HTTP spec natively over `Request`/`Response` — no Node compat shims. Each request constructs a fresh server + transport in stateless mode, so there is no cross-request state on the edge.
+The Worker uses the SDK's `WebStandardStreamableHTTPServerTransport`, which speaks the MCP Streamable HTTP spec natively over `Request`/`Response` — no Node compat shims, no `fetch-to-node` adapter. Each request constructs a fresh `McpServer` + transport in stateless mode (no `sessionIdGenerator`), so there is zero cross-request state on the edge. The Worker can be invalidated, scaled, or relocated freely.
 
 A stable per-user `userId` is derived by SHA-256 hashing the user's `(tavily_key, youtube_key)` pair. The same person on different machines with the same keys gets the same history. **Changing keys creates a new partition** — old history is unreachable, not deleted.
+
+---
+
+## Design decisions
+
+The shape of this server is the result of explicit trade-offs. They are documented here because they're the most useful thing for someone reading this as a reference for how to structure their own MCP.
+
+### Data + state, not actions
+
+The server does not send email, generate copy, or orchestrate. The agent does all of that. The server only owns: external data fetching (which the agent cannot do without credentials), template persistence (which needs to outlive a session), and dedupe state (which needs a shared writeable record).
+
+This is the *narrow waist* principle. The server has the smallest tool surface that still removes work the agent genuinely can't do alone. Everything else stays composable: any email tool can sit downstream, any template-rendering style can sit upstream.
+
+### Header-based auth instead of OAuth
+
+OAuth requires a multi-step flow, browser handoff, and token storage. For a *demo / personal* MCP server it's the wrong shape — it adds a ceremony that doubles the setup time and forces the server to either keep credentials or run a callback flow.
+
+Instead, the user passes their own third-party API keys per request via headers (`x-tavily-key`, `x-youtube-key`). Auth is purely "do you hold these two keys?" — and the userId is derived from a SHA-256 hash of the pair so the same user gets the same partition without ever giving us a password. Trade-off accepted: keys-as-account, no recovery if you lose them. See [Option A → How auth works](#how-auth-works-on-the-hosted-instance).
+
+### D1 over KV or Durable Objects
+
+Templates and send-history are naturally relational, queries want `GROUP BY` and indexed lookups, and the data is small. D1 is one binding line in `wrangler.toml`, has a generous free tier, and uses plain SQL. KV would force key-encoded scanning; Durable Objects would buy us per-user isolation we don't yet need at the cost of a much heavier deployment model.
+
+### Per-request stateless transport
+
+Workers isolates can be created and discarded freely. Anything that lives across requests has to be either pushed into a binding (KV, D1, DO) or rebuilt every invocation. We chose the simpler path: the `McpServer` and `Transport` are constructed inside each request handler. Cost: some object construction overhead per request (negligible). Benefit: zero state-management code, no shared mutability, no isolate-affinity bugs.
+
+### Streamable HTTP over stdio / SSE
+
+stdio is a local-process transport — wrong shape for a remote server. The legacy SSE transport was deprecated in favor of Streamable HTTP for remote servers in the [2025-03-26 spec revision](https://modelcontextprotocol.io/). Streamable HTTP supports both JSON-RPC over HTTP POST and SSE-framed responses on the same endpoint, plus per-request progress notifications, and the SDK's `WebStandardStreamableHTTPServerTransport` is built specifically for runtimes like Workers.
+
+### Both a server prompt AND a skill file
+
+`src/prompts/outreach-workflow.ts` registers an MCP prompt — the canonical, discoverable, server-side workflow doc. `examples/outreach-workflow.skill.md` is the *same content* as a Claude Code-compatible skill file. Why both?
+
+- The MCP prompt is the source of truth and works for any MCP client via `prompts/get`.
+- The skill file lets agents that auto-load context at session start (Claude Code) absorb the workflow without a `prompts/get` round-trip.
+
+The string content is exported as `OUTREACH_WORKFLOW_CONTENT` from the prompt module specifically so the two can be diffed when one updates.
+
+### Templates are *both* tools and resources
+
+Templates have CRUD tools (`create`, `get`, `list`, `update`, `delete`) *and* are exposed as MCP resources at `template://{name}`. A purist might pick one. We pick both because they answer different client questions: tools are for "perform this action," resources are for "what readable context exists?" Resource-aware clients can show templates in a picker without invoking a tool; tool-only clients can still manage them imperatively.
+
+### Pagination is opaque-cursor, not offset
+
+`list_templates` and `get_outreach_summary` return a `nextCursor` (base64-encoded offset) rather than exposing raw offsets. Today the cursor is just an offset; tomorrow it could become a keyset/seek cursor without breaking callers. The opaqueness is the contract.
+
+### What we deliberately did *not* do
+
+- **No OAuth or multi-tenant accounts** — the demo trade-off above
+- **No rate limiting** — Cloudflare's edge protections cover the demo's scale; add `cloudflare:rate-limit` if it becomes public
+- **No webhook support** — out of scope for v1
+- **No HMAC-salted userId** — would close a small key-correlation hole; left as a future hardening for self-hosters who want it
+- **No automated database backups** — D1's time-travel covers most cases; self-hosters get a `wrangler d1 export` recipe in the README
 
 ---
 
@@ -270,15 +397,19 @@ game-outreach-mcp/
 │   │   ├── templates/             # create / get / list / update / delete
 │   │   ├── outreach/              # check_contact_eligibility, record_send
 │   │   └── reporting/             # get_outreach_summary
+│   ├── resources/
+│   │   └── templates.ts           # template://{name} resource exposure
 │   ├── prompts/
 │   │   └── outreach-workflow.ts   # Canonical workflow prompt (source of truth)
 │   ├── types/                     # env, tool-context, db row shapes
-│   └── lib/                       # steam, youtube, tavily, errors
+│   └── lib/                       # steam, youtube, tavily, errors, pagination
+├── test/                          # Vitest unit tests (auth, errors, pagination)
 ├── examples/
 │   └── outreach-workflow.skill.md # Mirrors the server prompt for skill-aware agents
 ├── migrations/
 │   └── 0001_initial.sql           # D1 schema
 ├── wrangler.toml
+├── vitest.config.ts
 ├── tsconfig.json
 └── package.json
 ```
@@ -291,7 +422,8 @@ game-outreach-mcp/
 npm install
 npm run db:init       # local D1
 npm run dev           # http://localhost:8787
-npm run typecheck
+npm run typecheck     # strict + noUncheckedIndexedAccess + exactOptionalPropertyTypes
+npm run test          # Vitest unit tests for auth, errors, pagination
 ```
 
 Smoke test the MCP endpoint:

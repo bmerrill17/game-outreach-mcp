@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 // Exported so the examples/outreach-workflow.skill.md can stay in sync.
@@ -83,17 +84,62 @@ Example: https://store.steampowered.com/app/1234567/Game_Name/ → game_id is "1
 get_steam_page returns this as the \`appId\` field.
 `;
 
+const PromptArgsSchema = {
+  game_url: z
+    .string()
+    .optional()
+    .describe(
+      "Optional Steam store URL to pre-pin the campaign to a specific game. If provided, the agent should call get_steam_page on this URL as the first step.",
+    ),
+  template_name: z
+    .string()
+    .optional()
+    .describe(
+      "Optional semantic template name to use for this run. If provided, the agent skips template selection and uses this template throughout.",
+    ),
+  dry_run: z
+    .enum(["true", "false"])
+    .optional()
+    .describe(
+      "If 'true', the agent should render draft emails for review and skip the actual send + record_send step. Defaults to 'false'.",
+    ),
+};
+
+function renderArgsAddendum(args: {
+  game_url?: string | undefined;
+  template_name?: string | undefined;
+  dry_run?: string | undefined;
+}): string {
+  const lines: string[] = [];
+  if (args.game_url) lines.push(`- Use this Steam URL: ${args.game_url}`);
+  if (args.template_name) lines.push(`- Use template: ${args.template_name}`);
+  if (args.dry_run === "true") {
+    lines.push(
+      "- Dry run mode: render draft emails for the user to review. Do not send. Do not call record_send.",
+    );
+  }
+
+  if (lines.length === 0) return "";
+
+  return `\n\n## Run Configuration (from prompt arguments)\n\n${lines.join("\n")}\n`;
+}
+
 export function registerPrompts(server: McpServer): void {
-  server.prompt(
+  server.registerPrompt(
     "outreach-workflow",
-    "Complete workflow instructions for running an indie game media outreach campaign using this server. Read this before starting any outreach run.",
-    () => ({
+    {
+      title: "Outreach Workflow",
+      description:
+        "Complete workflow instructions for running an indie game media outreach campaign using this server. Read this before starting any outreach run. Optional arguments pre-pin the run to a specific game, template, or dry-run mode.",
+      argsSchema: PromptArgsSchema,
+    },
+    (args) => ({
       messages: [
         {
           role: "user" as const,
           content: {
             type: "text" as const,
-            text: OUTREACH_WORKFLOW_CONTENT,
+            text: OUTREACH_WORKFLOW_CONTENT + renderArgsAddendum(args),
           },
         },
       ],

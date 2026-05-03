@@ -3,7 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolContext } from "../../types/tool-context";
 import { toolError, toolSuccess } from "../../lib/errors";
 
-export const CreateTemplateSchema = {
+const InputSchema = {
   name: z
     .string()
     .min(1)
@@ -28,11 +28,30 @@ export const CreateTemplateSchema = {
     ),
 };
 
+const OutputSchema = {
+  id: z.string(),
+  name: z.string(),
+  subject: z.string(),
+  body: z.string(),
+  created_at: z.string(),
+};
+
 export function registerCreateTemplate(server: McpServer, getCtx: () => ToolContext): void {
-  server.tool(
+  server.registerTool(
     "create_template",
-    "Creates a new outreach email template with a semantic name. Template names must be unique per user and use lowercase-hyphenated format. Use {{hook}} in the body where personalised content should be inserted by the agent at send time.",
-    CreateTemplateSchema,
+    {
+      title: "Create Template",
+      description:
+        "Creates a new outreach email template with a semantic name. Template names must be unique per user and use lowercase-hyphenated format. Use {{hook}} in the body where personalised content should be inserted by the agent at send time.",
+      inputSchema: InputSchema,
+      outputSchema: OutputSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false, // INSERT — same call twice errors on UNIQUE
+        openWorldHint: false,
+      },
+    },
     async ({ name, subject, body }) => {
       const ctx = getCtx();
       const now = new Date().toISOString();

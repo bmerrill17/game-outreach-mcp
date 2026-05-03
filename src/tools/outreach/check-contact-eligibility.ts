@@ -3,17 +3,14 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ToolContext } from "../../types/tool-context";
 import { toolError, toolSuccess } from "../../lib/errors";
 
-export const CheckContactEligibilitySchema = {
-  contacts: z
-    .array(
-      z.object({
-        email: z.string().email(),
-        channel_url: z.string().url().optional(),
-        channel_name: z.string().optional(),
-      }),
-    )
-    .min(1)
-    .describe("List of contacts to check"),
+const ContactInputSchema = z.object({
+  email: z.string().email(),
+  channel_url: z.string().url().optional(),
+  channel_name: z.string().optional(),
+});
+
+const InputSchema = {
+  contacts: z.array(ContactInputSchema).min(1).describe("List of contacts to check"),
   template_name: z
     .string()
     .describe(
@@ -26,14 +23,41 @@ export const CheckContactEligibilitySchema = {
     ),
 };
 
+const EligibleSchema = z.object({
+  email: z.string(),
+  channel_url: z.string().optional(),
+  channel_name: z.string().optional(),
+});
+
+const SkippedSchema = EligibleSchema.extend({
+  previously_sent_at: z.string().nullable(),
+});
+
+const OutputSchema = {
+  eligible_count: z.number(),
+  skipped_count: z.number(),
+  eligible: z.array(EligibleSchema),
+  skipped: z.array(SkippedSchema),
+};
+
 export function registerCheckContactEligibility(
   server: McpServer,
   getCtx: () => ToolContext,
 ): void {
-  server.tool(
+  server.registerTool(
     "check_contact_eligibility",
-    "Filters a list of contacts to only those who have NOT yet been sent a specific template for a specific game. Returns both eligible and skipped lists with reasons. Always call this before any outreach run to prevent duplicate sends.",
-    CheckContactEligibilitySchema,
+    {
+      title: "Check Contact Eligibility",
+      description:
+        "Filters a list of contacts to only those who have NOT yet been sent a specific template for a specific game. Returns both eligible and skipped lists with reasons. Always call this before any outreach run to prevent duplicate sends.",
+      inputSchema: InputSchema,
+      outputSchema: OutputSchema,
+      annotations: {
+        readOnlyHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
     async ({ contacts, template_name, game_id }) => {
       const ctx = getCtx();
 
