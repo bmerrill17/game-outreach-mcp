@@ -21,6 +21,14 @@ The server handles data and state. You handle all reasoning, hook generation, an
    f. Immediately call `record_send` on success
 8. `get_outreach_summary` to report on the completed run
 
+## Follow-Up Run
+
+When sending a new template (e.g. 7-day follow-up) to people already pitched for the same game:
+1. `list_sent_contacts` with the `game_id` — returns distinct contacts with channel info and which templates they've received
+2. `check_contact_eligibility` with that list, the NEW template name, and same game_id — filters to anyone not yet sent the follow-up
+3. Draft hooks using the channel info already in the `list_sent_contacts` response (no need to re-run `get_channel_info` unless you want fresh recent-video titles)
+4. Send + `record_send` per successful send
+
 ## Hook Writing Guidelines
 - Reference a specific recent video by title — never generic ("I see you cover strategy games")
 - Connect one specific game mechanic to what they clearly enjoy covering

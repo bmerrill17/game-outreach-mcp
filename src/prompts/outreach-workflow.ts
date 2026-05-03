@@ -50,6 +50,21 @@ All reasoning, hook writing, and orchestration belongs to you (the agent).
 
 7. Call \`get_outreach_summary\` to report campaign coverage
 
+## Follow-Up Run (sending a new template to people you've already pitched)
+
+When you have a new template (e.g. a 7-day follow-up) and want to send it to contacts already pitched for the same game:
+
+1. Call \`list_sent_contacts\` with the \`game_id\` (and optionally a prior \`template_name\` to scope to recipients of one specific template)
+   → Returns: distinct contacts with channel info and which templates they've received
+
+2. Call \`check_contact_eligibility\` with that contact list, the NEW template name, and the same game_id
+   → Returns: who hasn't yet received the new template (everyone, on first follow-up)
+
+3. For each eligible contact, draft the personalised hook using the channel info already in the response from step 1
+   → No need to re-call \`get_channel_info\` unless you want fresh recent-video titles
+
+4. Send via the email MCP, then \`record_send\` per successful send (steps 6e–6f from the standard run)
+
 ## Template Placeholder Reference
 
 Templates support these placeholders — you substitute them at send time:

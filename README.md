@@ -74,7 +74,7 @@ claude mcp add game-outreach --scope user --transport http \
 
 Verify:
 - `claude mcp list` — should show `game-outreach`
-- In any session, type `/mcp` — shows connection status and the 11 tools
+- In any session, type `/mcp` — shows connection status and the 12 tools
 
 `--scope user` writes to `~/.claude.json` and makes the server available in every Claude Code session on this machine. Use `--scope project` instead to write to `.mcp.json` in the current repo (don't do that if your headers contain real keys you don't want in git).
 
@@ -214,7 +214,7 @@ Self-hosting doesn't *eliminate* the key-derived userId model — that's a code-
 
 ## Surface area
 
-### Tools (11)
+### Tools (12)
 
 Every tool ships with `inputSchema`, `outputSchema`, behavioral `annotations` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`), and returns both `content` (text) and `structuredContent` (typed object) so modern clients get parseable data while older ones still see formatted text.
 
@@ -231,6 +231,7 @@ Every tool ships with `inputSchema`, `outputSchema`, behavioral `annotations` (`
 | Outreach   | `check_contact_eligibility`   | Filter contacts to those not yet sent a given template for a game     |
 | Outreach   | `record_send`                 | Append an immutable send-history row                                   |
 | Reporting  | `get_outreach_summary`        | Aggregate sends by game and template (paginated)                      |
+| Reporting  | `list_sent_contacts`          | Distinct contacts pitched for a game with channel info + templates sent — drives follow-up campaigns (paginated) |
 
 ### Resources (1)
 
@@ -302,6 +303,27 @@ agent> [calls prompts/get name=outreach-workflow game_url=...]
        Done. Sent 3 personalised emails, skipped 1 (already contacted last week).
 ```
 
+A follow-up run a week later, with a new template, looks like:
+
+```
+user> Send the 7-day follow-up template to everyone I pitched for app 1234567.
+
+agent> [calls list_sent_contacts game_id="1234567"]
+        → { count: 3, contacts: [
+            { contact_email: "...", channel_name: "...",
+              templates_sent: ["initial-outreach"], last_sent_at: "..." },
+            ... ] }
+
+       [calls check_contact_eligibility template_name="follow-up-7day"
+                                        game_id="1234567"
+                                        contacts=[...above...]]
+        → { eligible_count: 3, skipped_count: 0, ... }
+
+       [for each: get_template "follow-up-7day", substitute, send, record_send]
+
+       Done. Sent 3 follow-ups.
+```
+
 The agent does all reasoning and copy generation. The server only fetches data, holds state, and enforces dedupe.
 
 ---
@@ -371,7 +393,15 @@ Templates have CRUD tools (`create`, `get`, `list`, `update`, `delete`) *and* ar
 
 ### Pagination is opaque-cursor, not offset
 
-`list_templates` and `get_outreach_summary` return a `nextCursor` (base64-encoded offset) rather than exposing raw offsets. Today the cursor is just an offset; tomorrow it could become a keyset/seek cursor without breaking callers. The opaqueness is the contract.
+`list_templates`, `get_outreach_summary`, and `list_sent_contacts` return a `nextCursor` (base64-encoded offset) rather than exposing raw offsets. Today the cursor is just an offset; tomorrow it could become a keyset/seek cursor without breaking callers. The opaqueness is the contract.
+
+### Contact emails stored in the clear (not hashed)
+
+A privacy-minimizing alternative would be to hash `contact_email` before storage. Dedup and counts would still work, and the maintainer of a hosted instance would no longer hold third-party PII in retrievable form.
+
+We don't do this because it would foreclose the follow-up workflow: `list_sent_contacts` returns the actual addresses an agent needs to send a *new* template (e.g. a 7-day follow-up) to people it pitched in a previous session. Without retrievable emails, the agent would have to re-discover every contact by re-running `find_channels` + `get_channel_info`, which is unreliable (search ranking shifts, channels disappear from results) and costly.
+
+The trade-off lands on **server-as-source-of-truth for contacts** instead of **server-as-opaque-dedup-ledger**. The hosted-demo framing in the README absorbs the resulting privacy posture; serious users self-host so the data lives in *their* Cloudflare account.
 
 ### What we deliberately did *not* do
 

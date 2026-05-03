@@ -15,6 +15,7 @@ import { registerCheckContactEligibility } from "./tools/outreach/check-contact-
 import { registerRecordSend } from "./tools/outreach/record-send";
 
 import { registerGetOutreachSummary } from "./tools/reporting/get-outreach-summary";
+import { registerListSentContacts } from "./tools/reporting/list-sent-contacts";
 
 import { registerTemplateResources } from "./resources/templates";
 
@@ -46,6 +47,7 @@ export function createMcpServer(getCtx: () => ToolContext): McpServer {
 
   // Reporting
   registerGetOutreachSummary(server, getCtx);
+  registerListSentContacts(server, getCtx);
 
   // Resources — templates surfaced as first-class readable state alongside the CRUD tools
   registerTemplateResources(server, getCtx);
