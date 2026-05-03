@@ -12,23 +12,120 @@ All reasoning, hook writing, and orchestration belongs to the agent calling the 
 
 ---
 
-## Architecture
+## Two ways to use this
 
-```
-Agent (Claude / other MCP client)
-  │
-  ▼
-Hono app on Cloudflare Workers
-  │
-  ├── /mcp     — MCP Streamable HTTP transport
-  └── /health  — uptime check
-  │
-  ▼
-D1 (SQLite at the edge)   ── templates, sent_emails
-External APIs             ── Steam Store, YouTube Data API, Tavily
+| Mode             | Setup time | Who hosts      | Who owns the data                          | Cost to you |
+| ---------------- | ---------- | -------------- | ------------------------------------------ | ----------- |
+| **Hosted demo**  | 0 minutes  | The maintainer | The maintainer holds your templates + send history (key-hash partitioned) | Free        |
+| **Self-host**    | ~10 min    | You            | You. Your Cloudflare account, your D1.     | Free tier   |
+
+If you're trying it out or running a small campaign, the hosted demo is the lowest-friction path. If you're running serious outreach, treating contact data as sensitive, or want zero trust dependencies — **self-host**. Same code, same Worker, just a different deploy target.
+
+---
+
+## Option A — Use the hosted instance
+
+### 1. Get two free API keys
+
+| Key            | Where                                                                            |
+| -------------- | -------------------------------------------------------------------------------- |
+| `x-tavily-key` | [tavily.com](https://tavily.com)                                                 |
+| `x-youtube-key`| [console.cloud.google.com](https://console.cloud.google.com) → enable YouTube Data API v3 |
+
+### 2. Add to your MCP client
+
+`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+
+```json
+{
+  "mcpServers": {
+    "game-outreach": {
+      "url": "https://game-outreach-mcp.bmerrill17.workers.dev/mcp",
+      "transport": "http",
+      "headers": {
+        "x-tavily-key":  "your-tavily-key",
+        "x-youtube-key": "your-youtube-key"
+      }
+    }
+  }
+}
 ```
 
-Auth is purely **header-based**. There is no OAuth, no sessions, no stored credentials. A stable `userId` is derived by hashing the user's submitted key pair so the same person on different machines gets the same history.
+Restart your client. The 11 tools and the `outreach-workflow` prompt will appear.
+
+### What the maintainer sees vs. doesn't
+
+The auth model is **header-based with no key storage**. Verifiable in [`src/auth.ts`](src/auth.ts):
+
+| Visible to maintainer                                                  | Not visible                                              |
+| ---------------------------------------------------------------------- | -------------------------------------------------------- |
+| Hash of your two API keys (32 hex chars), used as your partition key   | Your Tavily / YouTube API keys themselves                |
+| Templates you create (subject + body)                                  | Anything happening inside your MCP client                |
+| Send history rows: contact email, channel URL, game ID, template name  | The actual emails you send (this server doesn't send mail) |
+| Worker request logs (Cloudflare default), with sensitive headers stripped before any custom log line | Plaintext credentials in any form                        |
+
+If "the maintainer holds my list of pitched contacts" is not OK with you, **self-host**.
+
+---
+
+## Option B — Self-host
+
+The whole project deploys to your own Cloudflare account in a few minutes. You own the D1 database, you own the Worker, the maintainer sees nothing.
+
+### 1. Install wrangler and authenticate
+
+```bash
+npm install
+npx wrangler login
+```
+
+### 2. Pick your own names
+
+Edit [`wrangler.toml`](wrangler.toml) — change `name`, `database_name`, and (after the next step) `database_id`:
+
+```toml
+name = "my-game-outreach-mcp"        # your worker name
+[[d1_databases]]
+binding       = "DB"
+database_name = "my-game-outreach-db"  # your DB name
+database_id   = "..."                  # filled in after step 3
+```
+
+If you renamed `database_name`, also update the matching name in [`package.json`](package.json) → `scripts.db:init` and `scripts.db:init:remote`.
+
+### 3. Create your D1 database
+
+```bash
+npx wrangler d1 create my-game-outreach-db
+```
+
+Copy the printed `database_id` into `wrangler.toml`.
+
+### 4. Apply the schema
+
+Local (for `npm run dev`):
+```bash
+npm run db:init
+```
+
+Remote (production):
+```bash
+npm run db:init:remote
+```
+
+### 5. Deploy
+
+```bash
+npm run deploy
+```
+
+Wrangler will prompt you to pick a `workers.dev` subdomain on first deploy — this is account-wide, set once, used by every Worker you ever publish.
+
+Your URL: `https://my-game-outreach-mcp.<your-subdomain>.workers.dev/mcp`
+
+### 6. Connect your client
+
+Same JSON snippet as Option A, but pointing at *your* Worker URL.
 
 ---
 
@@ -52,142 +149,37 @@ Plus one MCP **prompt**: `outreach-workflow` — the canonical workflow guide, d
 
 ---
 
-## Usage
+## Discovery
 
-This server is self-documenting via MCP Prompts. Once connected, call `prompts/list` to discover available prompts, then `prompts/get` with name `outreach-workflow` to load the full workflow into your agent's context.
+This server is self-documenting via MCP Prompts. Once connected, call `prompts/list` to see available prompts, then `prompts/get` with name `outreach-workflow` to load the full workflow into your agent's context.
 
-A pre-built skill file is available at [`examples/outreach-workflow.skill.md`](examples/outreach-workflow.skill.md) for agents that benefit from auto-loaded context (e.g. Claude Code). It mirrors the server prompt — the server prompt is the authoritative version.
-
-### Required Headers
-
-Every request must include:
-
-| Header           | Where to get a key                                                              |
-| ---------------- | ------------------------------------------------------------------------------- |
-| `x-tavily-key`   | Free at [tavily.com](https://tavily.com)                                        |
-| `x-youtube-key`  | Free at [Google Cloud Console](https://console.cloud.google.com) (YouTube Data API v3) |
-
-### Auth & Storage
-
-This server **never stores your API keys**. Keys passed via request headers are used for that request only and immediately discarded. You can verify this in [`src/auth.ts`](src/auth.ts) — keys are hashed to derive a stable user ID and never written to any storage.
-
-Your send history and templates are stored in Cloudflare D1, scoped to the hash of your key combination. **If you change your keys your history will not be accessible under the new key pair.**
-
-### What This Server Does Not Do
-
-- **Send emails** — use your own Gmail MCP, Resend MCP, or any email tool
-- **Generate personalised copy** — your agent does this
-- **Store API keys** — derived hash only
-- **Access your game files or Unity project**
+A pre-built skill file is also at [`examples/outreach-workflow.skill.md`](examples/outreach-workflow.skill.md) for agents that benefit from auto-loaded context (e.g. Claude Code). It mirrors the server prompt — the server prompt is the authoritative version.
 
 ---
 
-## Deploy
+## Architecture
 
-### Prerequisites
-
-```bash
-npm install -g wrangler
-wrangler login
+```
+Agent (Claude / other MCP client)
+  │
+  ▼
+Hono app on Cloudflare Workers
+  │
+  ├── /mcp     — MCP Streamable HTTP transport (Web Standard APIs)
+  └── /health  — uptime check
+  │
+  ▼
+D1 (SQLite at the edge)   ── templates, sent_emails
+External APIs             ── Steam Store, YouTube Data API, Tavily
 ```
 
-### 1. Install dependencies
+The Worker uses the SDK's `WebStandardStreamableHTTPServerTransport`, which speaks the MCP Streamable HTTP spec natively over `Request`/`Response` — no Node compat shims. Each request constructs a fresh server + transport in stateless mode, so there is no cross-request state on the edge.
 
-```bash
-npm install
-```
-
-### 2. Create D1 database
-
-```bash
-wrangler d1 create game-outreach-mcp-db
-```
-
-Copy the printed `database_id` into `wrangler.toml`.
-
-### 3. Run migrations
-
-Local:
-```bash
-npm run db:init
-```
-
-Remote (production):
-```bash
-npm run db:init:remote
-```
-
-### 4. Type check
-
-```bash
-npm run typecheck
-```
-
-### 5. Run locally
-
-```bash
-npm run dev
-```
-
-Test the health endpoint:
-```bash
-curl http://localhost:8787/health
-```
-
-List the 11 tools:
-```bash
-curl -X POST http://localhost:8787/mcp \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json, text/event-stream" \
-  -H "x-tavily-key: your-tavily-key" \
-  -H "x-youtube-key: your-youtube-key" \
-  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
-```
-
-Discover the workflow prompt:
-```bash
-curl -X POST http://localhost:8787/mcp \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json, text/event-stream" \
-  -H "x-tavily-key: your-tavily-key" \
-  -H "x-youtube-key: your-youtube-key" \
-  -d '{"jsonrpc":"2.0","method":"prompts/list","id":2}'
-```
-
-### 6. Deploy
-
-```bash
-npm run deploy
-```
+A stable per-user `userId` is derived by SHA-256 hashing the user's `(tavily_key, youtube_key)` pair. The same person on different machines with the same keys gets the same history. **Changing keys creates a new partition** — old history is unreachable, not deleted.
 
 ---
 
-## Connect to a client
-
-### Claude Desktop / Claude Code
-
-`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
-
-```json
-{
-  "mcpServers": {
-    "game-outreach": {
-      "url": "https://game-outreach-mcp.YOUR_SUBDOMAIN.workers.dev/mcp",
-      "transport": "http",
-      "headers": {
-        "x-tavily-key":  "your-tavily-key",
-        "x-youtube-key": "your-youtube-key"
-      }
-    }
-  }
-}
-```
-
-Restart Claude. The 11 tools and the `outreach-workflow` prompt should appear.
-
----
-
-## Project Structure
+## Project structure
 
 ```
 game-outreach-mcp/
@@ -213,6 +205,37 @@ game-outreach-mcp/
 ├── tsconfig.json
 └── package.json
 ```
+
+---
+
+## Local development
+
+```bash
+npm install
+npm run db:init       # local D1
+npm run dev           # http://localhost:8787
+npm run typecheck
+```
+
+Smoke test the MCP endpoint:
+
+```bash
+curl -X POST http://localhost:8787/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "x-tavily-key: your-tavily-key" \
+  -H "x-youtube-key: your-youtube-key" \
+  -d '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+```
+
+---
+
+## What this server does **not** do
+
+- **Send emails** — use your Gmail MCP, Resend MCP, or any other email tool
+- **Generate personalised copy** — the agent does this
+- **Store API keys** — only a non-reversible hash
+- **Access your game files or engine project**
 
 ---
 
