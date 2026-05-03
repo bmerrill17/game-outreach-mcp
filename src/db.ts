@@ -20,6 +20,12 @@ export async function getTemplate(
   return result ?? null;
 }
 
+/**
+ * Returns raw sent_emails rows. Note that PII fields (contact_email_ct,
+ * channel_url_ct, channel_name_ct, notes_ct) are AES-GCM ciphertext — callers
+ * must decrypt with the requesting user's `UserCrypto` instance before exposing
+ * any values to the agent.
+ */
 export async function getSentEmails(
   db: D1Database,
   userId: string,

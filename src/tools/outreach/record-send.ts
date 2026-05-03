@@ -36,7 +36,7 @@ export function registerRecordSend(server: McpServer, getCtx: () => ToolContext)
     {
       title: "Record Send",
       description:
-        "Records a completed outreach email send to the tracking history. Call this immediately after a successful send via your email MCP. This is what prevents duplicate sends in future runs. Records are immutable — there is no delete or update for send history.",
+        "Records a completed outreach email send to the tracking history. Call this immediately after a successful send via your email MCP. This is what prevents duplicate sends in future runs. Records are immutable — there is no delete or update for send history. PII fields (contact_email, channel_url, channel_name, notes) are encrypted at rest under a key derived from your API headers.",
       inputSchema: InputSchema,
       outputSchema: OutputSchema,
       annotations: {
@@ -60,29 +60,43 @@ export function registerRecordSend(server: McpServer, getCtx: () => ToolContext)
       const now = new Date().toISOString();
 
       try {
+        // Compute fingerprint + ciphertexts in parallel — all four crypto ops
+        // are independent and the AES-GCM nonces are random per call.
+        const [emailFp, emailCt, urlCt, nameCt, notesCt] = await Promise.all([
+          ctx.crypto.fingerprint(contact_email),
+          ctx.crypto.encrypt(contact_email),
+          channel_url ? ctx.crypto.encrypt(channel_url) : Promise.resolve(null),
+          channel_name ? ctx.crypto.encrypt(channel_name) : Promise.resolve(null),
+          notes ? ctx.crypto.encrypt(notes) : Promise.resolve(null),
+        ]);
+
         await ctx.db
           .prepare(
             `INSERT INTO sent_emails
-              (id, user_id, contact_email, channel_url, channel_name, game_id, template_name, sent_at, sent_via, notes)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              (id, user_id, contact_email_fp, contact_email_ct, channel_url_ct,
+               channel_name_ct, game_id, template_name, sent_at, sent_via, notes_ct)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .bind(
             id,
             ctx.userId,
-            contact_email,
-            channel_url ?? null,
-            channel_name ?? null,
+            emailFp,
+            emailCt,
+            urlCt,
+            nameCt,
             game_id,
             template_name,
             now,
             sent_via ?? null,
-            notes ?? null,
+            notesCt,
           )
           .run();
 
         return toolSuccess({
           recorded: true as const,
           id,
+          // Echo the cleartext email back — agent passed it in, no privacy gain
+          // from withholding it on the response side.
           contact_email,
           game_id,
           template_name,

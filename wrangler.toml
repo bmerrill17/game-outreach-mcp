@@ -16,6 +16,7 @@ compatibility_flags = ["nodejs_compat"]
 binding = "DB"
 database_name = "game-outreach-mcp-db"
 database_id = "a352e09a-579f-42f2-a053-ca2dc4ed372d"
+migrations_dir = "./migrations"
 
 [vars]
 # No secrets here — all third-party keys come from request headers per-request

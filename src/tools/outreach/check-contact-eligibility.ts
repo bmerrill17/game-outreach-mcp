@@ -49,7 +49,7 @@ export function registerCheckContactEligibility(
     {
       title: "Check Contact Eligibility",
       description:
-        "Filters a list of contacts to only those who have NOT yet been sent a specific template for a specific game. Returns both eligible and skipped lists with reasons. Always call this before any outreach run to prevent duplicate sends.",
+        "Filters a list of contacts to only those who have NOT yet been sent a specific template for a specific game. Returns both eligible and skipped lists with reasons. Always call this before any outreach run to prevent duplicate sends. Matching is performed against per-user HMAC fingerprints — your contact emails are never compared against another user's stored data.",
       inputSchema: InputSchema,
       outputSchema: OutputSchema,
       annotations: {
@@ -62,19 +62,37 @@ export function registerCheckContactEligibility(
       const ctx = getCtx();
 
       try {
+        // Fingerprint each input email under the user's HMAC key so we can
+        // match against the stored fingerprint column without ever decrypting.
+        const fingerprints = await Promise.all(
+          contacts.map((c) => ctx.crypto.fingerprint(c.email)),
+        );
+        const indexedContacts = contacts.map((contact, i) => ({
+          contact,
+          fp: fingerprints[i]!,
+        }));
+
         const history = await ctx.db
           .prepare(
-            "SELECT contact_email, sent_at FROM sent_emails WHERE user_id = ? AND game_id = ? AND template_name = ?",
+            "SELECT contact_email_fp, sent_at FROM sent_emails WHERE user_id = ? AND game_id = ? AND template_name = ?",
           )
           .bind(ctx.userId, game_id, template_name)
-          .all<{ contact_email: string; sent_at: string }>();
+          .all<{ contact_email_fp: string; sent_at: string }>();
 
-        const sentMap = new Map(history.results.map((r) => [r.contact_email, r.sent_at]));
+        const sentMap = new Map(
+          history.results.map((r) => [r.contact_email_fp, r.sent_at]),
+        );
 
-        const eligible = contacts.filter((c) => !sentMap.has(c.email));
-        const skipped = contacts
-          .filter((c) => sentMap.has(c.email))
-          .map((c) => ({ ...c, previously_sent_at: sentMap.get(c.email) ?? null }));
+        const eligible = indexedContacts
+          .filter(({ fp }) => !sentMap.has(fp))
+          .map(({ contact }) => contact);
+
+        const skipped = indexedContacts
+          .filter(({ fp }) => sentMap.has(fp))
+          .map(({ contact, fp }) => ({
+            ...contact,
+            previously_sent_at: sentMap.get(fp) ?? null,
+          }));
 
         return toolSuccess({
           eligible_count: eligible.length,

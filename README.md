@@ -125,11 +125,14 @@ This is fine for a demo, but it has hard fragility properties you must understan
 | Visible to maintainer                                                  | Not visible                                              |
 | ---------------------------------------------------------------------- | -------------------------------------------------------- |
 | Hash of your two API keys (32 hex chars), used as your partition key   | Your Tavily / YouTube API keys themselves                |
-| Templates you create (subject + body)                                  | Anything happening inside your MCP client                |
-| Send history rows: contact email, channel URL, game ID, template name  | The actual emails you send (this server doesn't send mail) |
+| Templates you create (subject + body) — *not encrypted*               | Your encrypted PII (see below)                           |
+| Send history metadata: `game_id`, `template_name`, `sent_at`, `sent_via` | `contact_email`, `channel_url`, `channel_name`, `notes` — **AES-GCM ciphertext** under a key derived per-request from your API headers. Maintainer cannot decrypt. |
+| HMAC fingerprints of contact emails (used for dedup) — opaque hex      | The plaintext emails behind those fingerprints           |
 | Worker request logs (Cloudflare default), with sensitive headers stripped before any custom log line | Plaintext credentials in any form                        |
 
-If any of the fragility points above are deal-breakers — and for a real outreach campaign, they should be — **[self-host](#option-b--self-host)**.
+PII fields are encrypted at rest under per-user keys derived from your API headers. The maintainer holds opaque ciphertext that cannot be decrypted with database access alone — see [Design decisions → PII encrypted at rest](#pii-encrypted-at-rest-under-per-user-keys) for the full crypto model.
+
+That said, the *templates themselves* (subject + body text) are not encrypted, and the fragility properties above (no recovery, no SLA, etc.) still apply. If any of those are deal-breakers — and for a real outreach campaign, they should be — **[self-host](#option-b--self-host)**.
 
 ---
 
@@ -170,15 +173,19 @@ Copy the printed `database_id` into `wrangler.toml`.
 
 ### 4. Apply the schema
 
+Migrations are applied with `wrangler d1 migrations apply`, which tracks which files have run and only applies new ones.
+
 Local (for `npm run dev`):
 ```bash
-npm run db:init
+npm run db:migrate
 ```
 
 Remote (production):
 ```bash
-npm run db:init:remote
+npm run db:migrate:remote
 ```
+
+> ⚠️ **Migration `0002_encrypt_pii.sql` is destructive.** It drops the existing `sent_emails` table and recreates it with encrypted columns. Pre-migration send history *cannot* be migrated because the encryption key is derived from each user's API keys, which the server does not store. If you have meaningful production send history under the old plaintext schema, export it first via `wrangler d1 export <db-name> --remote --table sent_emails`. Templates are unaffected.
 
 ### 5. Deploy
 
@@ -395,13 +402,30 @@ Templates have CRUD tools (`create`, `get`, `list`, `update`, `delete`) *and* ar
 
 `list_templates`, `get_outreach_summary`, and `list_sent_contacts` return a `nextCursor` (base64-encoded offset) rather than exposing raw offsets. Today the cursor is just an offset; tomorrow it could become a keyset/seek cursor without breaking callers. The opaqueness is the contract.
 
-### Contact emails stored in the clear (not hashed)
+### PII encrypted at rest under per-user keys
 
-A privacy-minimizing alternative would be to hash `contact_email` before storage. Dedup and counts would still work, and the maintainer of a hosted instance would no longer hold third-party PII in retrievable form.
+Third-party contact data (`contact_email`, `channel_url`, `channel_name`, `notes`) lives in D1 as ciphertext, not plaintext. The encryption key is **derived per-request** from the user's `(x-tavily-key, x-youtube-key)` pair via HKDF-SHA256, never stored, and never leaves the request handler.
 
-We don't do this because it would foreclose the follow-up workflow: `list_sent_contacts` returns the actual addresses an agent needs to send a *new* template (e.g. a 7-day follow-up) to people it pitched in a previous session. Without retrievable emails, the agent would have to re-discover every contact by re-running `find_channels` + `get_channel_info`, which is unreliable (search ranking shifts, channels disappear from results) and costly.
+Concretely, each `sent_emails` row stores:
 
-The trade-off lands on **server-as-source-of-truth for contacts** instead of **server-as-opaque-dedup-ledger**. The hosted-demo framing in the README absorbs the resulting privacy posture; serious users self-host so the data lives in *their* Cloudflare account.
+- `contact_email_fp` — HMAC-SHA256 fingerprint of `lowercase(trim(email))`. Deterministic per-user, used for dedup matching in SQL.
+- `contact_email_ct` — AES-GCM ciphertext (random nonce per encryption). Used for retrieval in `list_sent_contacts` (decrypted in the request handler before returning to the agent).
+- `channel_url_ct`, `channel_name_ct`, `notes_ct` — same AES-GCM scheme.
+
+Public fields (`game_id`, `template_name`, `sent_at`, `sent_via`) stay in the clear — they're either user-chosen identifiers or non-PII metadata.
+
+What this changes:
+
+- **Maintainer with D1 access alone reads nothing.** Just opaque hex fingerprints and base64 ciphertext blobs. The maintainer cannot decrypt without the user's API keys, which the server doesn't store.
+- **Cross-user fingerprints are independent.** HMAC keys derive from each user's own API pair, so the same contact email produces different fingerprints across users. No correlation across the user partition boundary.
+- **All existing functionality preserved.** Dedup (fingerprint match), follow-up retrieval (ciphertext decrypt on the way out), counts (unique fingerprints) — all intact.
+
+Trade-offs accepted:
+- Crypto cost per request (HKDF derivation + per-row AES-GCM ops). Negligible at this scale.
+- A user who loses their API keys can never recover their encrypted history. Already true for `userId`, so consistent.
+- Existing pre-0002 rows can't be migrated (server doesn't have the keys to encrypt them under). The 0002 migration drops the table — destructive, documented in [Option B → Apply the schema](#4-apply-the-schema).
+
+This is the **single biggest privacy posture improvement** the server can make without losing functionality. It transforms the README sentence from "the maintainer holds your contacts" to "the maintainer holds blobs only you can decrypt."
 
 ### What we deliberately did *not* do
 
@@ -432,12 +456,13 @@ game-outreach-mcp/
 │   ├── prompts/
 │   │   └── outreach-workflow.ts   # Canonical workflow prompt (source of truth)
 │   ├── types/                     # env, tool-context, db row shapes
-│   └── lib/                       # steam, youtube, tavily, errors, pagination
-├── test/                          # Vitest unit tests (auth, errors, pagination)
+│   └── lib/                       # steam, youtube, tavily, errors, pagination, crypto (HKDF + AES-GCM + HMAC)
+├── test/                          # Vitest unit tests (auth, errors, pagination, crypto)
 ├── examples/
 │   └── outreach-workflow.skill.md # Mirrors the server prompt for skill-aware agents
 ├── migrations/
-│   └── 0001_initial.sql           # D1 schema
+│   ├── 0001_initial.sql           # base schema
+│   └── 0002_encrypt_pii.sql       # PII fields → AES-GCM ciphertext + HMAC fingerprints
 ├── wrangler.toml
 ├── vitest.config.ts
 ├── tsconfig.json
@@ -450,10 +475,10 @@ game-outreach-mcp/
 
 ```bash
 npm install
-npm run db:init       # local D1
+npm run db:migrate    # apply all migrations to local D1
 npm run dev           # http://localhost:8787
 npm run typecheck     # strict + noUncheckedIndexedAccess + exactOptionalPropertyTypes
-npm run test          # Vitest unit tests for auth, errors, pagination
+npm run test          # Vitest unit tests (auth, errors, pagination, crypto)
 ```
 
 Smoke test the MCP endpoint:

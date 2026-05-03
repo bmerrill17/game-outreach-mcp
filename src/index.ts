@@ -5,6 +5,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import type { Env } from "./types/env";
 import type { ToolContext } from "./types/tool-context";
 import { extractUserContext } from "./auth";
+import { deriveUserCrypto } from "./lib/crypto";
 import { createMcpServer, SERVER_INFO } from "./server";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -62,11 +63,20 @@ app.all("/mcp", async (c) => {
     );
   }
 
+  // Per-request: derive AES-GCM + HMAC keys from the user's API-key pair.
+  // These keys never leave the request — they're computed in memory, used to
+  // encrypt/decrypt PII fields, and discarded when the handler returns.
+  const userCryptoInstance = await deriveUserCrypto(
+    userCtxResult.tavilyKey,
+    userCtxResult.youtubeKey,
+  );
+
   const ctx: ToolContext = {
     userId: userCtxResult.userId,
     tavilyKey: userCtxResult.tavilyKey,
     youtubeKey: userCtxResult.youtubeKey,
     db: c.env.DB,
+    crypto: userCryptoInstance,
   };
 
   const server = createMcpServer(() => ctx);

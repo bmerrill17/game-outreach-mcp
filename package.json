@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "db:migrate": "wrangler d1 migrations apply DB --local",
+    "db:migrate:remote": "wrangler d1 migrations apply DB --remote",
     "db:init": "wrangler d1 execute game-outreach-mcp-db --file=./migrations/0001_initial.sql",
     "db:init:remote": "wrangler d1 execute game-outreach-mcp-db --file=./migrations/0001_initial.sql --remote",
     "db:init:preview": "wrangler d1 execute game-outreach-mcp-db-preview --file=./migrations/0001_initial.sql --env preview",
