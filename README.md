@@ -185,8 +185,6 @@ Remote (production):
 npm run db:migrate:remote
 ```
 
-> ⚠️ **Migration `0002_encrypt_pii.sql` is destructive.** It drops the existing `sent_emails` table and recreates it with encrypted columns. Pre-migration send history *cannot* be migrated because the encryption key is derived from each user's API keys, which the server does not store. If you have meaningful production send history under the old plaintext schema, export it first via `wrangler d1 export <db-name> --remote --table sent_emails`. Templates are unaffected.
-
 ### 5. Deploy
 
 ```bash
@@ -414,18 +412,12 @@ Concretely, each `sent_emails` row stores:
 
 Public fields (`game_id`, `template_name`, `sent_at`, `sent_via`) stay in the clear — they're either user-chosen identifiers or non-PII metadata.
 
-What this changes:
+Properties:
 
-- **Maintainer with D1 access alone reads nothing.** Just opaque hex fingerprints and base64 ciphertext blobs. The maintainer cannot decrypt without the user's API keys, which the server doesn't store.
-- **Cross-user fingerprints are independent.** HMAC keys derive from each user's own API pair, so the same contact email produces different fingerprints across users. No correlation across the user partition boundary.
-- **All existing functionality preserved.** Dedup (fingerprint match), follow-up retrieval (ciphertext decrypt on the way out), counts (unique fingerprints) — all intact.
-
-Trade-offs accepted:
-- Crypto cost per request (HKDF derivation + per-row AES-GCM ops). Negligible at this scale.
-- A user who loses their API keys can never recover their encrypted history. Already true for `userId`, so consistent.
-- Existing pre-0002 rows can't be migrated (server doesn't have the keys to encrypt them under). The 0002 migration drops the table — destructive, documented in [Option B → Apply the schema](#4-apply-the-schema).
-
-This is the **single biggest privacy posture improvement** the server can make without losing functionality. It transforms the README sentence from "the maintainer holds your contacts" to "the maintainer holds blobs only you can decrypt."
+- A maintainer with D1 access alone reads only opaque hex fingerprints and base64 ciphertext blobs. Decryption requires the user's API keys, which the server doesn't store.
+- HMAC keys derive from each user's own API pair, so the same contact email produces different fingerprints across users. No correlation across the user partition boundary.
+- A user who loses their API keys can never recover their encrypted history. Same property as `userId`, so consistent.
+- Crypto cost per request is negligible — one HKDF derivation, one AES-GCM op per encrypted field, one HMAC per fingerprint.
 
 ### What we deliberately did *not* do
 
@@ -461,8 +453,7 @@ game-outreach-mcp/
 ├── examples/
 │   └── outreach-workflow.skill.md # Mirrors the server prompt for skill-aware agents
 ├── migrations/
-│   ├── 0001_initial.sql           # base schema
-│   └── 0002_encrypt_pii.sql       # PII fields → AES-GCM ciphertext + HMAC fingerprints
+│   └── 0001_initial.sql           # D1 schema (templates + sent_emails with encrypted PII)
 ├── wrangler.toml
 ├── vitest.config.ts
 ├── tsconfig.json
