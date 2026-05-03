@@ -14,16 +14,18 @@ All reasoning, hook writing, and orchestration belongs to the agent calling the 
 
 ## Two ways to use this
 
-| Mode             | Setup time | Who hosts      | Who owns the data                          | Cost to you |
-| ---------------- | ---------- | -------------- | ------------------------------------------ | ----------- |
-| **Hosted demo**  | 0 minutes  | The maintainer | The maintainer holds your templates + send history (key-hash partitioned) | Free        |
-| **Self-host**    | ~10 min    | You            | You. Your Cloudflare account, your D1.     | Free tier   |
+| Mode                              | Setup    | Who owns the data                                   | Use it for                                    |
+| --------------------------------- | -------- | --------------------------------------------------- | --------------------------------------------- |
+| **Hosted demo** *(try-it only)*   | 0 min    | The maintainer holds your templates + send history  | Kicking the tires, exploring the tools        |
+| **Self-host** *(production path)* | ~10 min  | You. Your Cloudflare account, your D1.              | Anything you'd actually be sad to lose        |
 
-If you're trying it out or running a small campaign, the hosted demo is the lowest-friction path. If you're running serious outreach, treating contact data as sensitive, or want zero trust dependencies — **self-host**. Same code, same Worker, just a different deploy target.
+> **Use self-host for anything real.** The hosted instance is a personal demo deployment. It has no SLA, no backups guaranteed beyond Cloudflare defaults, no migration plan if I take it down, and no way for the maintainer to recover your data if you lose access. If you're running a real campaign with real contacts — fork and deploy. The self-host path is exactly the same code, takes about 10 minutes, and costs $0 on Cloudflare's free tier. See [Option B](#option-b--self-host).
 
 ---
 
 ## Option A — Use the hosted instance
+
+> ⚠️ **Demo only — not for production use.** Read the [fragility notes](#how-auth-works-on-the-hosted-instance) below before relying on this for anything you can't afford to lose. For real campaigns, [self-host](#option-b--self-host).
 
 ### 1. Get two free API keys
 
@@ -53,9 +55,19 @@ If you're trying it out or running a small campaign, the hosted demo is the lowe
 
 Restart your client. The 11 tools and the `outreach-workflow` prompt will appear.
 
-### What the maintainer sees vs. doesn't
+### How auth works on the hosted instance
 
-The auth model is **header-based with no key storage**. Verifiable in [`src/auth.ts`](src/auth.ts):
+There is no signup, no email, no password. The hosted instance derives a stable per-user partition key by SHA-256 hashing your `(tavily_key, youtube_key)` pair on each request. **Your two API keys are functionally your account.** Verifiable in [`src/auth.ts`](src/auth.ts).
+
+This is fine for a demo, but it has hard fragility properties you must understand before storing anything you care about:
+
+- **No recovery.** Lose either API key and your templates + send history are unreachable. The maintainer holds only the hash and cannot help you recover. The data isn't deleted, just orphaned.
+- **Key rotation orphans your data.** Rotating your Tavily or YouTube key creates a new partition. Migrating from old → new requires you to copy templates by hand *before* you rotate.
+- **Sharing keys = sharing data.** Anyone you give your two API keys to becomes the same user from the server's perspective. There are no per-user roles, ACLs, or audit trails.
+- **No SLA, no backups guaranteed.** This is a personal Worker on a free tier. The maintainer may turn it off, change deployment, or hit a free-tier limit at any time.
+- **The hash is not the keys, but it is a key-derived fingerprint.** SHA-256 is one-way and the input space is too large to brute-force, so an attacker who steals the database cannot recover your API keys from it. They could, however, *correlate* your row to your keys if they obtained those keys from a different source.
+
+### What the maintainer sees vs. doesn't
 
 | Visible to maintainer                                                  | Not visible                                              |
 | ---------------------------------------------------------------------- | -------------------------------------------------------- |
@@ -64,13 +76,15 @@ The auth model is **header-based with no key storage**. Verifiable in [`src/auth
 | Send history rows: contact email, channel URL, game ID, template name  | The actual emails you send (this server doesn't send mail) |
 | Worker request logs (Cloudflare default), with sensitive headers stripped before any custom log line | Plaintext credentials in any form                        |
 
-If "the maintainer holds my list of pitched contacts" is not OK with you, **self-host**.
+If any of the fragility points above are deal-breakers — and for a real outreach campaign, they should be — **[self-host](#option-b--self-host)**.
 
 ---
 
 ## Option B — Self-host
 
-The whole project deploys to your own Cloudflare account in a few minutes. You own the D1 database, you own the Worker, the maintainer sees nothing.
+**This is the production path.** The whole project deploys to your own Cloudflare account in about 10 minutes. You own the D1 database, you own the Worker, the maintainer sees nothing, the fragility tradeoffs above stop being yours to inherit. Cost: $0 on Cloudflare's free tier for typical indie usage.
+
+You'll need: a [Cloudflare account](https://dash.cloudflare.com/sign-up) (free), Node.js 18+, and the two API keys from Option A step 1.
 
 ### 1. Install wrangler and authenticate
 
@@ -125,7 +139,41 @@ Your URL: `https://my-game-outreach-mcp.<your-subdomain>.workers.dev/mcp`
 
 ### 6. Connect your client
 
-Same JSON snippet as Option A, but pointing at *your* Worker URL.
+Same JSON snippet as Option A, but pointing at *your* Worker URL:
+
+```json
+{
+  "mcpServers": {
+    "game-outreach": {
+      "url": "https://my-game-outreach-mcp.<your-subdomain>.workers.dev/mcp",
+      "transport": "http",
+      "headers": {
+        "x-tavily-key":  "your-tavily-key",
+        "x-youtube-key": "your-youtube-key"
+      }
+    }
+  }
+}
+```
+
+Or via Claude Code:
+
+```bash
+claude mcp add game-outreach --scope user --transport http \
+  https://my-game-outreach-mcp.<your-subdomain>.workers.dev/mcp \
+  --header "x-tavily-key: your-tavily-key" \
+  --header "x-youtube-key: your-youtube-key"
+```
+
+### 7. (Recommended) Back up your D1 occasionally
+
+Self-hosting puts you in control, which means you also own the recovery story. D1 has its own time-travel restore for accidents, but for outreach campaigns you care about it's worth periodically exporting:
+
+```bash
+npx wrangler d1 export game-outreach-mcp-db --remote --output=backup.sql
+```
+
+Self-hosting doesn't *eliminate* the key-derived userId model — that's a code-level design decision and applies anywhere this code runs. What it does eliminate is the "the maintainer holds my data and I can't get it back" risk. Your data lives in *your* D1, you can `wrangler d1 execute "SELECT *"` it any time, and key rotations are recoverable because you can manually re-key rows (or just fork the code to use any auth model you prefer).
 
 ---
 
