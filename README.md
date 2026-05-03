@@ -29,31 +29,78 @@ All reasoning, hook writing, and orchestration belongs to the agent calling the 
 
 ### 1. Get two free API keys
 
-| Key            | Where                                                                            |
-| -------------- | -------------------------------------------------------------------------------- |
-| `x-tavily-key` | [tavily.com](https://tavily.com)                                                 |
-| `x-youtube-key`| [console.cloud.google.com](https://console.cloud.google.com) → enable YouTube Data API v3 |
+You need a Tavily key and a YouTube Data API key. Both are free, no credit card required, and they're the same keys whether you use the hosted demo or self-host — so do this once.
 
-### 2. Add to your MCP client
+#### Tavily (~1 minute)
 
-`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+1. Go to [tavily.com](https://tavily.com) and sign up
+2. Verify your email — the dashboard opens with your key already generated
+3. Copy it. The format is `tvly-...`
 
-```json
-{
-  "mcpServers": {
-    "game-outreach": {
-      "url": "https://game-outreach-mcp.bmerrill17.workers.dev/mcp",
-      "transport": "http",
-      "headers": {
-        "x-tavily-key":  "your-tavily-key",
-        "x-youtube-key": "your-youtube-key"
-      }
-    }
-  }
-}
+Free tier: 1,000 searches/month. More than enough for indie outreach.
+
+#### YouTube Data API v3 (~5 minutes)
+
+1. Open [console.cloud.google.com](https://console.cloud.google.com) and sign in with any Google account
+2. Top bar → project dropdown → **New Project** → name it (e.g. `outreach-mcp`) → **Create**
+3. With the new project selected: hamburger menu → **APIs & Services** → **Library**
+4. Search **"YouTube Data API v3"** → click it → **Enable**
+5. Left sidebar → **Credentials** → **+ Create Credentials** → **API key**
+6. Copy the key. The format is `AIzaSy...`
+7. (Recommended) Click **Edit API key** → under "API restrictions" select **Restrict key** → check only "YouTube Data API v3" → **Save**. The key becomes useless for any other Google API if it leaks.
+
+Free tier: 10,000 units/day. A channel search costs ~100 units; fetching channel details costs ~1 unit. Plenty of headroom.
+
+### 2. Register the MCP with your client
+
+Pick whichever client you use. Same hosted URL either way, both store the keys in plaintext in a local config file.
+
+#### Claude Code (CLI)
+
+One command:
+
+```bash
+claude mcp add game-outreach --scope user --transport http \
+  https://game-outreach-mcp.bmerrill17.workers.dev/mcp \
+  --header "x-tavily-key: tvly-PASTE_YOURS" \
+  --header "x-youtube-key: AIzaSy-PASTE_YOURS"
 ```
 
-Restart your client. The 11 tools and the `outreach-workflow` prompt will appear.
+Verify:
+- `claude mcp list` — should show `game-outreach`
+- In any session, type `/mcp` — shows connection status and the 11 tools
+
+`--scope user` writes to `~/.claude.json` and makes the server available in every Claude Code session on this machine. Use `--scope project` instead to write to `.mcp.json` in the current repo (don't do that if your headers contain real keys you don't want in git).
+
+#### Claude Desktop (the app)
+
+1. Open the config file (create it if it doesn't exist):
+
+   - **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+   - **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+
+2. Paste this, replacing the key values:
+
+   ```json
+   {
+     "mcpServers": {
+       "game-outreach": {
+         "url": "https://game-outreach-mcp.bmerrill17.workers.dev/mcp",
+         "transport": "http",
+         "headers": {
+           "x-tavily-key":  "tvly-PASTE_YOURS",
+           "x-youtube-key": "AIzaSy-PASTE_YOURS"
+         }
+       }
+     }
+   }
+   ```
+
+3. **Fully quit and restart** Claude Desktop (tray icon → Quit, not just close the window). The 11 tools and the `outreach-workflow` prompt will appear in the tools menu.
+
+### 3. Smoke test
+
+Ask the agent: *"List my outreach templates"*. If it picks the `list_templates` tool and returns `count: 0` (assuming you haven't created any yet), the connection is working end-to-end.
 
 ### How auth works on the hosted instance
 
@@ -139,31 +186,13 @@ Your URL: `https://my-game-outreach-mcp.<your-subdomain>.workers.dev/mcp`
 
 ### 6. Connect your client
 
-Same JSON snippet as Option A, but pointing at *your* Worker URL:
+Follow [Option A → step 2](#2-register-the-mcp-with-your-client) verbatim, swapping the URL for your own:
 
-```json
-{
-  "mcpServers": {
-    "game-outreach": {
-      "url": "https://my-game-outreach-mcp.<your-subdomain>.workers.dev/mcp",
-      "transport": "http",
-      "headers": {
-        "x-tavily-key":  "your-tavily-key",
-        "x-youtube-key": "your-youtube-key"
-      }
-    }
-  }
-}
+```
+https://my-game-outreach-mcp.<your-subdomain>.workers.dev/mcp
 ```
 
-Or via Claude Code:
-
-```bash
-claude mcp add game-outreach --scope user --transport http \
-  https://my-game-outreach-mcp.<your-subdomain>.workers.dev/mcp \
-  --header "x-tavily-key: your-tavily-key" \
-  --header "x-youtube-key: your-youtube-key"
-```
+Same Claude Code command, same Claude Desktop JSON, same headers. The only thing that changes is the host.
 
 ### 7. (Recommended) Back up your D1 occasionally
 
