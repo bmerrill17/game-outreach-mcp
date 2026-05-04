@@ -43,7 +43,7 @@ const SUMMARY_SELECT = `
   game_id,
   template_name,
   COUNT(*) AS total_sends,
-  COUNT(DISTINCT contact_email) AS unique_contacts,
+  COUNT(DISTINCT contact_email_fp) AS unique_contacts,
   MAX(sent_at) AS last_sent_at
 `;
 
