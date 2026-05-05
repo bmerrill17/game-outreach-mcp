@@ -15,7 +15,7 @@ app.use(
   "*",
   cors({
     origin: "*",
-    allowMethods: ["GET", "POST", "OPTIONS", "DELETE"],
+    allowMethods: ["POST", "OPTIONS"],
     allowHeaders: [
       "Content-Type",
       "Authorization",
@@ -49,7 +49,9 @@ app.get("/", (c) =>
 // MCP endpoint — Streamable HTTP transport over Web Standard APIs.
 // Each request gets a fresh server + transport in stateless mode, which keeps
 // the Worker invocation self-contained and avoids cross-request state on the edge.
-app.all("/mcp", async (c) => {
+// Stateless = POST-only: GET (server→client SSE listener) and DELETE (session
+// teardown) only make sense with a session, so we 405 them below.
+app.post("/mcp", async (c) => {
   const userCtxResult = await extractUserContext(c);
 
   if ("error" in userCtxResult) {
@@ -87,6 +89,10 @@ app.all("/mcp", async (c) => {
 
   return transport.handleRequest(c.req.raw);
 });
+
+app.on(["GET", "DELETE"], "/mcp", (c) =>
+  c.body(null, 405, { Allow: "POST" }),
+);
 
 // Error handler — strips sensitive headers from logs to prevent key leakage
 const SENSITIVE_HEADERS = new Set([
